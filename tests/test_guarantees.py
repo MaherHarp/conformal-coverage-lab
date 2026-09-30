@@ -27,6 +27,7 @@ from conformal import (
     split_weighted,
 )
 from conformal.data import (
+    drift_stream,
     hetero_coverage,
     linear_coverage,
     rbf_features,
@@ -154,6 +155,12 @@ class TestOnline(unittest.TestCase):
         p2 = rls_one_step(X, y2)
         np.testing.assert_array_equal(p1[:51], p2[:51])
         self.assertFalse(np.allclose(p1[51:], p2[51:]))
+
+    def test_rls_stays_stable_on_drift_stream(self):
+        # Regression test: without re-symmetrizing P, forget=0.99 diverged in the t(2) regime.
+        X, y, bounds = drift_stream(6000, 5, np.random.default_rng(600))
+        s = np.abs(y - rls_one_step(X, y, forget=0.99))
+        self.assertLess(np.quantile(s[bounds[2]:], 0.9), 10.0)
 
     def test_rolling_coverage(self):
         err = np.array([0, 1, 0, 0, 1, 1, 0], dtype=bool)

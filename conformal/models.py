@@ -47,8 +47,13 @@ class QuantileLinear:
         eye = sparse.identity(n, format="csr")
         A = sparse.hstack([sparse.csr_matrix(X), eye, -eye], format="csr")
         bounds = [(None, None)] * d + [(0.0, None)] * (2 * n)
-        res = linprog(c, A_eq=A, b_eq=y, bounds=bounds, method="highs")
-        if res.status != 0:
+        # The RBF designs are nearly collinear, and HiGHS' default path occasionally
+        # stops with a numerical-difficulty status. Interior point solves those cases.
+        for method in ("highs", "highs-ipm"):
+            res = linprog(c, A_eq=A, b_eq=y, bounds=bounds, method=method)
+            if res.status == 0:
+                break
+        else:
             raise RuntimeError(f"quantile LP failed: {res.message}")
         self.coef_ = res.x[:d]
         return self

@@ -25,7 +25,12 @@ from .split import conformal_quantile
 
 
 def rls_one_step(X: np.ndarray, y: np.ndarray, forget: float = 0.99, delta: float = 100.0) -> np.ndarray:
-    """Recursive least squares with exponential forgetting. pred[t] uses data < t only."""
+    """Recursive least squares with exponential forgetting. pred[t] uses data < t only.
+
+    P is re-symmetrized every step. Without that, rounding makes P lose symmetry
+    and definiteness. On the drift stream with forget=0.99 its top eigenvalue
+    reached ~1e12 and the predictor diverged.
+    """
     T, d = X.shape
     P = delta * np.eye(d)
     w = np.zeros(d)
@@ -37,6 +42,7 @@ def rls_one_step(X: np.ndarray, y: np.ndarray, forget: float = 0.99, delta: floa
         g = Px / (forget + x @ Px)
         w = w + g * (y[t] - pred[t])
         P = (P - np.outer(g, Px)) / forget
+        P = 0.5 * (P + P.T)
     return pred
 
 

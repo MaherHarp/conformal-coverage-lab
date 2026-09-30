@@ -11,11 +11,13 @@ the response vector, so with H the hat matrix of the augmented design,
 
     r(y) = (I - H) [y_1, ..., y_n, 0]^T + y (I - H) e_{n+1} = a + b y.
 
-Each comparison |a_i + b_i y| >= |a_{n+1} + b_{n+1} y| is a quadratic
-inequality in y, with at most 2 roots. Between consecutive roots the count
-is constant, so the prediction set is an exact union of intervals found by
-one sort and one vectorized count. There is no grid and no refit.
-(This follows Vovk, Gammerman & Shafer's ridge-regression confidence machine.)
+Each comparison 1{|a_i + b_i y| >= |a_{n+1} + b_{n+1} y|} is the sign of a
+quadratic q_i(y), with at most 2 roots. So the count N(y) = sum_i 1{q_i(y) >= 0}
+is piecewise constant. It is known at y = -inf (from each leading coefficient)
+and changes by +-1 exactly at the roots. One sort of <= 2n root events and a
+cumulative sum give N on every region: O(n d^2 + n log n) per test point,
+with no hat matrix, no grid, and no refit. (This follows the ridge-regression
+confidence machine of Vovk, Gammerman & Shafer.)
 """
 from __future__ import annotations
 
@@ -25,43 +27,42 @@ import numpy as np
 
 
 def _affine_residuals(X: np.ndarray, y: np.ndarray, x_new: np.ndarray, lam: float):
+    """a = (I - H) [y; 0] and b = (I - H) e_{n+1}, computed in O(n d^2) without forming H."""
     n, d = X.shape
     Xa = np.vstack([X, x_new[None, :]])
     G = Xa.T @ Xa + lam * np.eye(d)
-    H = Xa @ np.linalg.solve(G, Xa.T)
     ya = np.append(y, 0.0)
-    a = ya - H @ ya
-    b = -H[:, n].copy()
+    sol = np.linalg.solve(G, np.column_stack([Xa.T @ ya, x_new]))
+    a = ya - Xa @ sol[:, 0]
+    b = -(Xa @ sol[:, 1])
     b[n] += 1.0
     return a, b
 
 
-def _real_roots(q2: np.ndarray, q1: np.ndarray, q0: np.ndarray) -> np.ndarray:
-    """All real roots of q2 y^2 + q1 y + q0 = 0, vectorized, using the stable formula."""
+def _sign_events(q2: np.ndarray, q1: np.ndarray, q0: np.ndarray):
+    """For each quadratic, its indicator 1{q >= 0} at -inf, plus (root, +-1) toggle events.
+
+    A double root is emitted twice with opposite toggles, so it cancels, which is
+    correct because the sign does not change there.
+    """
     scale = np.maximum(np.maximum(np.abs(q2), np.abs(q1)), np.abs(q0)) + 1e-300
     quad = np.abs(q2) > 1e-12 * scale
-    roots = []
-    # Degenerate (linear) comparisons.
     lin = ~quad & (np.abs(q1) > 1e-12 * scale)
-    roots.append(-q0[lin] / q1[lin])
-    # Proper quadratics.
+    init = np.where(quad, q2 > 0, np.where(lin, q1 < 0, q0 >= 0))
+    flip = 1 - 2 * init.astype(np.int64)  # change applied at the first root
+
+    roots, deltas = [-q0[lin] / q1[lin]], [flip[lin]]
     A, B, C = q2[quad], q1[quad], q0[quad]
     disc = B * B - 4.0 * A * C
     ok = disc >= 0.0
-    A, B, C, sq = A[ok], B[ok], C[ok], np.sqrt(disc[ok])
-    t = -0.5 * (B + np.copysign(sq, B))
-    nz = t != 0.0
-    roots.append(t[nz] / A[nz])
-    roots.append(C[nz] / t[nz])
-    roots.append(np.zeros(int((~nz).sum())))  # B = 0 and disc = 0 -> double root at 0
-    return np.concatenate(roots)
-
-
-def _accepted(a, b, ys: np.ndarray, alpha: float) -> np.ndarray:
-    n = len(a) - 1
-    r = np.abs(a[:, None] + b[:, None] * ys[None, :])  # (n+1) x m
-    count = (r[:n] >= r[n][None, :]).sum(axis=0) + 1  # the test point always counts itself
-    return count > alpha * (n + 1)
+    A, B, C, sq, f = A[ok], B[ok], C[ok], np.sqrt(disc[ok]), flip[quad][ok]
+    t = -0.5 * (B + np.where(B >= 0, sq, -sq))  # stable quadratic formula
+    safe_t = np.where(t != 0.0, t, 1.0)
+    r1 = np.where(t != 0.0, t / A, 0.0)
+    r2 = np.where(t != 0.0, C / safe_t, 0.0)  # t = 0 only if B = C = 0 -> double root at 0
+    roots += [np.minimum(r1, r2), np.maximum(r1, r2)]
+    deltas += [f, -f]
+    return int(init.sum()), np.concatenate(roots), np.concatenate(deltas)
 
 
 def full_conformal_ridge(X: np.ndarray, y: np.ndarray, x_new: np.ndarray, lam: float, alpha: float) -> np.ndarray:
@@ -76,23 +77,18 @@ def full_conformal_ridge(X: np.ndarray, y: np.ndarray, x_new: np.ndarray, lam: f
     q2 = b[:n] ** 2 - bn**2
     q1 = 2.0 * (a[:n] * b[:n] - an * bn)
     q0 = a[:n] ** 2 - an**2
-    bps = np.unique(_real_roots(q2, q1, q0))
-    if len(bps) == 0:
-        return np.array([[-math.inf, math.inf]]) if _accepted(a, b, np.array([0.0]), alpha)[0] else np.empty((0, 2))
-    pad = max(1.0, float(np.abs(bps).max()))
-    probes = np.concatenate([[bps[0] - pad], 0.5 * (bps[1:] + bps[:-1]), [bps[-1] + pad]])
-    acc = _accepted(a, b, probes, alpha)
-    edges = np.concatenate([[-math.inf], bps, [math.inf]])  # region j spans edges[j], edges[j+1]
-    out = []
-    j = 0
-    while j < len(acc):
-        if acc[j]:
-            start = j
-            while j + 1 < len(acc) and acc[j + 1]:
-                j += 1
-            out.append([edges[start], edges[j + 1]])
-        j += 1
-    return np.array(out) if out else np.empty((0, 2))
+    n_init, roots, deltas = _sign_events(q2, q1, q0)
+    order = np.argsort(roots, kind="stable")
+    roots = roots[order]
+    counts = n_init + np.concatenate([[0], np.cumsum(deltas[order])])  # count on each region
+    acc = counts + 1 > alpha * (n + 1)  # +1: the test point always conforms to itself
+    edges = np.concatenate([[-math.inf], roots, [math.inf]])  # region j spans edges[j], edges[j+1]
+    # Merge runs of accepted regions: a run starts where acc goes 0->1 and ends where it goes 1->0.
+    padded = np.concatenate([[False], acc, [False]]).astype(np.int8)
+    starts = np.flatnonzero(np.diff(padded) == 1)
+    ends = np.flatnonzero(np.diff(padded) == -1)
+    out = np.column_stack([edges[starts], edges[ends]]) if len(starts) else np.empty((0, 2))
+    return out[out[:, 1] > out[:, 0]] if len(out) else out
 
 
 def full_conformal_bruteforce(X, y, x_new, lam, alpha, grid: np.ndarray) -> np.ndarray:

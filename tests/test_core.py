@@ -81,7 +81,7 @@ class TestModels(unittest.TestCase):
 class TestFullConformal(unittest.TestCase):
     def test_exact_equals_bruteforce(self):
         rng = np.random.default_rng(5)
-        cases = [(15, 3, 0.1, 0.2), (40, 13, 1e-2, 0.1), (12, 20, 1e-3, 0.1), (60, 4, 1.0, 0.05), (25, 2, 0.5, 0.3)]
+        cases = [(15, 3, 0.1, 0.2), (40, 13, 1e-2, 0.1), (12, 20, 1e-3, 0.1), (60, 4, 1.0, 0.05), (25, 2, 0.5, 0.3), (300, 13, 1e-2, 0.1)]
         for n, d, lam, alpha in cases:
             for _ in range(4):
                 X = rng.standard_normal((n, d))
